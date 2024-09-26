@@ -1,94 +1,5 @@
-## Log Segments:
+# TODO............
 
-Detail structure https://strimzi.io/blog/2021/12/17/kafka-segment-retention/
-
-In Kafka's storage architecture, log segments represent a fundamental unit for storing data. Here's a detailed breakdown of how log segments work:
-
-### Sequential Storage:
-
-Log segments are sequentially appended files where Kafka stores its data on disk.
-Each log segment contains a contiguous sequence of records, ordered by their offset, which represents the position of the record in the log.
-### Immutability:
-
-Once a log segment is written, it becomes immutable, meaning its contents cannot be modified.
-Immutability ensures data integrity and simplifies replication, as replicas can be created by simply copying the segment without worrying about concurrent writes.
-### Segment Rolling:
-
-As data is continuously appended to a segment, it grows until it reaches a certain configurable size or time threshold.
-When a segment reaches this threshold, it is closed for writing, and a new segment is opened to continue storing incoming records.
-This process is known as segment rolling and ensures that segments remain manageable in size, facilitating efficient storage management and retrieval.
-### Retention and Deletion:
-
-Kafka supports configurable retention policies, allowing administrators to specify how long data should be retained in the log.
-Once data exceeds the retention period, it becomes eligible for deletion during log cleanup processes.
-Kafka's retention policies enable organizations to control storage costs and comply with data retention regulations by automatically removing old data.
-### Segment Indexing:
-
-Each log segment includes an index file that maps offsets to physical file positions, enabling efficient record retrieval based on offset.
-The index allows Kafka to quickly locate records within a segment without having to read through the entire file sequentially.
-
-#### extra: What about changing segment size?
-"Impact of increasing/decreasing the segment size"
-https://www.conduktor.io/blog/understanding-kafkas-internal-storage-and-log-retention/
-
-## Write-ahead Log (WAL):
-
-~ NVM SSD disks friendly, mechanical symphaty
-
-Write-Ahead Log (WAL) is a crucial component of Kafka's storage mechanism, providing durability and fault tolerance. Here's a detailed look at how WAL is implemented:
-
-### Durability Guarantee:
-
-When a producer sends a message to Kafka, it first writes the message to a log segment on disk before acknowledging the write to the producer.
-This ensures that the message is durably stored on disk before being considered successfully written, providing a strong durability guarantee.
-### Sequential Write Operations:
-
-Kafka employs sequential write operations to the log, appending new messages to the end of the log segment.
-Sequential writes are more efficient than random access writes, especially for spinning disk drives, and help optimize disk I/O performance.
-
-Write aplification, Wear leveling and Garbage Collection
-https://en.wikipedia.org/wiki/Write_amplification
-
-
-### Recovery Mechanism:
-
-In the event of a broker failure or crash, Kafka can recover data using the WAL.
-Upon restart, Kafka reads the WAL to reconstruct the state of the log and resumes normal operation from the last known consistent state.
-### Transaction Support:
-
-Kafka's WAL also supports transactional writes, allowing producers to atomically write multiple messages as part of a transaction.
-Transactional support ensures that either all messages within a transaction are successfully written to the log, or none of them are, preserving data consistency.
-### Integration with Log Segments:
-
-WAL seamlessly integrates with Kafka's log segment mechanism, where each log segment corresponds to a portion of the WAL.
-Once a log segment is filled, it is closed, and its contents are flushed to disk, ensuring that data written to the WAL is eventually persisted to stable storage.
-
-
-## Retention Policies:
-
-Kafka supports configurable retention policies for managing data retention.
-Data can be retained based on time or size constraints, allowing organizations to control storage costs and meet compliance requirements.
-Retention policies ensure that Kafka can handle high volumes of data without overwhelming the storage resources.
-
-"Log retention - The records may persist longer than the retention time"
-https://www.conduktor.io/blog/understanding-kafkas-internal-storage-and-log-retention/
-
-"How long my records are retained? Longer than you expect!"
-Detail structure https://strimzi.io/blog/2021/12/17/kafka-segment-retention/
-
-### Log compaction
-https://www.conduktor.io/kafka/kafka-topic-configuration-log-compaction/
-
-"Removing log data with cleanup policies"
-https://strimzi.io/blog/2021/06/08/broker-tuning/
-
-Tombstone
-https://medium.com/@damienthomlutz/deleting-records-in-kafka-aka-tombstones-651114655a16
-
-~ min.cleanable.dirty.ratio
-https://docs.confluent.io/platform/current/installation/configuration/topic-configs.html
-https://medium.com/apache-kafka-from-zero-to-hero/apache-kafka-guide-23-log-cleanup-compact-3f62751e4acb
-[ADVANCE] https://zendesk.engineering/an-investigation-into-kafka-log-compaction-5e520f4291f0
 
 
 ## Partitioning and Replication
@@ -126,3 +37,32 @@ https://github.com/fvaleri/strimzi-debugging/tree/main/sessions/006
 
 
 
+## min.cleanable.dirty.ratio
+  - https://docs.confluent.io/platform/current/installation/configuration/topic-configs.html
+  - https://medium.com/apache-kafka-from-zero-to-hero/apache-kafka-guide-23-log-cleanup-compact-3f62751e4acb
+  - [ADVANCE] https://zendesk.engineering/an-investigation-into-kafka-log-compaction-5e520f4291f0
+
+
+
+
+## Replication
+
+
+Apache Kafka is a commit-log system. The records are appended at the end of each Partition, and each Partition is also split into segments. Segments help delete older records through Compaction, improve performance, and much more.
+
+Apache Kafka behaves as a commit-log when it comes to dealing with storing records. 
+
+Records are appended at the end of each log one after the other and each log is also split in segments.
+Segments help with deletion of older records, improving performance, and much more. 
+
+So, the log is a logical sequence of records that’s composed of segments (files) and segments store a sub-sequence of records.
+
+Broker configuration allows you to tweak parameters related to logs. You can use configuration to control the rolling of segments, record retention, and so on.
+
+Not everyone is aware of how these parameters have an impact on broker behavior. 
+
+For instance, they determine how long records are stored and made available to consumers. 
+
+
+
+Kafka is typically referred to as a Distributed, Replicated Messaging Queue, which although technically true, usually leads to some confusion depending on your definition of a messaging queue. Instead, I prefer to call it a Distributed, Replicated Commit Log. This, I think, clearly represents what Kafka does, as all of us understand how logs are written to disk. And in this case, it is the messages pushed into Kafka that are stored to disk.

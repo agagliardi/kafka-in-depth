@@ -23,12 +23,14 @@ It has been implemented to work with _immutable records_ as fast as close to the
 
 The Kafka architecture is built on two layers, the _Control Plane_ (CP) and the _Data Plane_ (DP).  The CP is responsible for managing the metadata of a cluster. It is essentially the Zookeeper or KRaft part of the job. The DP handles the actual data management, client request processing and replication. Storage is in charge to the DP. 
 
-There are other key concepts not covered in this presentation such as
+There are other key concepts that will be part of other presentations:
 
+- Replication
 - Consumer Group Protocol (partition allocation and offset, rebalancing)
 - Idempotent producer (durability, availability, message ordering)
 
-There are also ancillary concepts that have emerged over time, such as
+There are also ancillary concepts that could be part of future presentation like:
+
 - Transactions 
 - Tiered storage
 
@@ -71,25 +73,25 @@ To prevent clients from hammering the broker when there are no new messages, req
 
 ### Files
 
-##### `.log`
+1. `.log`
 Batch records are written to files called log files in append-only mode. Deletion is a separate task that _should_ not affect read/write operations. Log files contain some metadata and sequences of Record Batch as they have been received. Then the same when read, record batch are transferred to the consumer as it is in the file.
-##### `.idx`.
+2. `.idx`.
 Contains offsets and physical file positions for messages in the order they were appended to the log. 
-##### `.timeindex`. 
-This indexes messages by their timestamp for time-based message retrieval.
-##### `.txnindex`. 
+3. `.timeindex`. 
+This indexes messages by their timestamp for time-based message retrieval. It contains a timestamp and an offset of the index.
+4. `.txnindex`. 
 Contains information about aborted transactions for each partition segment. It only exists if a transactional producer has been used with the topic. It allows Kafka to properly handle and recover transactions.
-##### `.snapshot`. 
+5. `.snapshot`. 
 It maps unique producer IDs (PIDs) to message sequence numbers. It exists only when an idempotent producer publishes to a topic partition (only once). 
-##### `.leader_epoch_checkpoint`. 
+6. `.leader_epoch_checkpoint`. 
 This is where Kafka checkpoints the last recorded leader epoch and the leader's last offset upon becoming leader. Leader epochs are used to track leadership changes for a partition, ensuring that each leader has a unique identifier. By checkpointing the latest leader epoch and offset, Kafka can pick up where it left off in the event of failures or restarts, maintaining data consistency and availability.
 
 
 ### Performance Key Points
 
-#### Standardised Message
+#### Standardised message
 
-Messages is a fairly minimal structure designed to fit the memory. In fact, the message format is the on-disk format. In addition, the same standardised message format is used throughout the Kafka layer, including network transfers. This avoids the byte copying bottleneck. Obviously, the structure starts with the length, which is useful to allocate the buffer, then attributes, but mostly as a delta from the record batch, followed by key and value details. At the end are the headers, because they are not a zero-day feature (since 0.11).
+Messages is a fairly minimal structure designed to fit the memory. In fact, the message format is the on-disk format. In addition, the same standardised message format is used throughout the Kafka layer, including network transfers. This avoids the byte-copying bottleneck. Obviously, the structure starts with the length, which is useful for buffer allocation, then attributes, but mostly as a delta from the record batch, followed by key and value details. At the end are the headers, since they are not a zero-day feature (as of 0.11).
 
 ![Record](../resources/30-Record.svg)
 
@@ -98,52 +100,116 @@ Messages is a fairly minimal structure designed to fit the memory. In fact, the 
 
 #### Zero-copy
 
-Zero-copy is the kernel feature (sys call `sendfile()` mapped by Java `FileChannel#transferTo`) to transfer data directly from read buffer to socket buffer in kernel space. Using encryption aka SSL prevents zero-copy (`SSL_sendfile` [is currently not supported](https://kafka.apache.org/documentation/#maximizingefficiency)).
+Zero-copy is the kernel feature (sys call `sendfile()` mapped by Java `FileChannel#transferTo`) to transfer data directly from the read buffer to the socket buffer in kernel space. Using encryption aka SSL prevents zero-copy (`SSL_sendfile` [is currently not supported](https://kafka.apache.org/documentation/#maximizingefficiency)).
 
 - Transfer with SSL (without zero-copy)
 
-Disk → Kernel buffer → User space buffer (SSL) → Kernel network buffer → Network
+Disk → Kernel Buffer → User Space Buffer (SSL) → Kernel Network Buffer → Network
 
-- Zero copy transfer
+- Zero Copy Transfer
 
-Disk → Kernel buffer → Network
+Disk → Kernel Buffer → Network
 
 #### PageCache
 
-PageCache is a kernel cache for disk `pages' implemented with paging memory management. The operating system caches pages in unused portions of RAM transparently to applications. This is why it is so important to have lots of free memory on a broker's machine.
+PageCache is a kernel cache for disk `pages' implemented using paging memory management. The operating system caches pages in unused portions of RAM, transparently to applications. This is why it is so important to have lots of free memory on a broker's machine.
+
+---
+ DEMO TIME sendfile/SSL
+
+---
+
+## Storage internals
+
+### Segment
+
+Kafka uses an implementation of _write-ahead logging_ called _commit-log_ to persist records. This is quite similar to the persistence of most databases. Again, Kafka is more like a database than a message broker.
+
+*Note that in the Kafka documentation, names are often ambiguous. 
+
+Records are appended to the end of a _log_ implemented as a _partition_, which in Kafka is just a folder with the name of the _topic_ plus a progressive number.Each log is divided into _segments_. In Kafka, segments are _.log_ files. The _segment_ stores a sequence of records.
+
+---
+##### NOTE
+Segment storage is highly configurable, but only at the broker level. It is not possible to configure it per part or per topic. It is also not possible to use a different mount point because Kafka only uses the `log.dir' folder. The workaround is to use different brokers for different storage and assign partitions accordingly. 
+
+---
+
+#### Segment characteristics
+
+1. Sequentiality
+
+Log segments are sequentially appended files in which Kafka stores its data on disk. Each log segment contains a contiguous sequence of records, ordered by their offset, which represents the position of the record in the log.
+
+2. Immutability
+
+Once a log segment is written, it becomes immutable, meaning that its contents cannot be changed. Immutability ensures data integrity and simplifies replication, as replicas can be created by simply copying the segment without worrying about concurrent writes.
+
+3. Rolling
+
+Data is continuously added to a segment. It grows until it reaches a configurable size or time threshold.
+When a segment reaches this threshold, it is closed for writing and a new segment is opened to continue storing incoming records.
+This process is known as segment rolling and ensures that segments remain manageable in size, facilitating efficient storage management and retrieval.
+
+4. Retention and Deletion
+
+Kafka has topic retention policies that specify how long data should be retained in the log file. Once data exceeds the retention threshold (time and size), it becomes eligible for deletion during log cleanup processes. This means that only the consumer will not receive any records from it. The log file will be deleted at any time in the future based on the LogCleaner settings.
+
+5. Compacting
+
+Log compaction is a deletion strategy that ensures that at least the most recent value for each key in a topic is retained by removing old values. It is not enabled by default and has some notable limitations:
+
+- The record must have a key
+- compacted records are still subject to the segment retention policy
+- Compacting only occurs when the segment is closed, because old or large enough active segments are not compacted.
+- Compacting is done by LogCleaner starting from the most dirty (i.e. how many records to delete) closed segment.
+
+6. Tombstone
+A tombstone is a special message with a null value that is used to 'suggest' a record for deletion and is deleted during the compacting process (if enabled). It is only a suggestion because the null value record is still visible to other consumers.
 
 
+#### Segment file size
+
+A small size is better for compacting. With compaction enabled, if the segment is filled slowly, it will take a lot of time to be compacted. In this scenario it is better to reduce the segment size to allow compaction to run sufficiently.
+
+Large size is better for saving resources. Fewer open files means less memory and more partitions per single broker (if disk space allows). Especially with fast producers, using large segments reduces the effort to keep up with them because fewer file operations are required.
 
 
----------------------------
-# TO CONTINUE
+#### SSD write amplification
 
-replication
+Kafka's commit log design can have a significant impact on SSD write amplification.
+
+Flash memory works by reading and writing data in pages (typically 4KB), but erasing data at the block level (typically 128KB-256KB).
+
+However, *blocks must be erased before pages can be rewritten*. This means that even if you need to overwrite a small piece of data, the entire block must be erased and rewritten, causing _write amplification_.
+
+Write amplification is caused by
+
+1.  Overwriting
+Unlike HDDs, SSDs can't overwrite data in place. Data must be erased before it can be rewritten. When you update a file, SSDs typically write the new data to an unused block and mark the old block for deletion. This results in both the new data being written and the old data being erased and eventually consolidated (resulting in more writes).
+
+2. Garbage collection
+SSDs use garbage collection to reclaim space from blocks that contain deleted or obsolete data. During this process, valid data is moved from partially filled blocks to new blocks, freeing up old blocks for deletion. However, this movement of data causes additional writes, contributing to write amplification.
+
+3. Wear leveling
+SSDs implement wear leveling to ensure that all blocks receive an even number of write/erase cycles (to prevent certain blocks from wearing out faster than others). This process involves moving data around, causing additional writes.
+
+Kafka commit logs, like most WAL implementations, can cause SSD write amplification. Write amplification occurs when more data is written to the SSD than the logical writes requested by the application. Some Kafka features increase the effect of write amplification.
+
+Kafka appends records sequentially and is SSD friendly because SSDs perform better with sequential writes than random writes. However, Kafka log management features such as compaction and deletion create SSD write amplification. 
+
+When Kafka deletes old segments due to retention policies or deletes tombstone markers in compaction, this results in more write cycles to the SSD. Because SSDs can't modify any part of a block, even small changes require the entire block to be rewritten, causing write amplification.
+
+This mismatch between logical writes and physical erase size is one of the key drivers of write amplification.
+
+Larger log segments result in fewer segment rolls and less frequent erasures, reducing write amplification.
 
 
-Apache Kafka is a commit-log system. The records are appended at the end of each Partition, and each Partition is also split into segments. Segments help delete older records through Compaction, improve performance, and much more.
+Retention policies also play a role in write amplification. When logs are deleted, entire segments are removed, potentially triggering SSD block erasures and writes.
 
-Apache Kafka behaves as a commit-log when it comes to dealing with storing records. 
+Tune retention and compaction settings to balance storage utilisation and performance to reduce unnecessary writes.
 
-Records are appended at the end of each log one after the other and each log is also split in segments.
-Segments help with deletion of older records, improving performance, and much more. 
-
-So, the log is a logical sequence of records that’s composed of segments (files) and segments store a sub-sequence of records.
-
-Broker configuration allows you to tweak parameters related to logs. You can use configuration to control the rolling of segments, record retention, and so on.
-
-Not everyone is aware of how these parameters have an impact on broker behavior. 
-
-For instance, they determine how long records are stored and made available to consumers. 
-
-
-
-Kafka is typically referred to as a Distributed, Replicated Messaging Queue, which although technically true, usually leads to some confusion depending on your definition of a messaging queue. Instead, I prefer to call it a Distributed, Replicated Commit Log. This, I think, clearly represents what Kafka does, as all of us understand how logs are written to disk. And in this case, it is the messages pushed into Kafka that are stored to disk.
-
-
-
-
-
+SSDs implement internal garbage collection to manage free space and ensure efficient writes. Frequent Kafka erasures could trigger the SSD's GC too much, leading to write amplification.
 
 
 Userfuyl link:
@@ -151,10 +217,6 @@ Userfuyl link:
 - https://developer.confluent.io/courses/architecture/broker/
 - https://andriymz.github.io/kafka/kafka-disk-write-performance/#zero-copy-data-transfer
 - https://kafka.apache.org/documentation/#messageformat
-
-
-
-NOTE: Compaction and Immutability
-NOTE: Record Batch and producer
-NOTE: The importance of lingering
-
+- https://strimzi.io/blog/2021/12/17/kafka-segment-retention/
+- https://conduktor.io/blog/understanding-kafka-s-internal-storage-and-log-retention
+- https://medium.com/@damienthomlutz/deleting-records-in-kafka-aka-tombstones-651114655a16
