@@ -19,6 +19,7 @@ It has been implemented to work with _immutable records_ as fast as close to the
 - Event: Mostly just refers to the concept of recording something that has happened. It is used as a synonym for message.
 - Message: It is the payload of data transmitted between producers and consumers.
 - Record: It is the element stored in Kafka. It is used as a data format for storage and includes key, value and metadata.
+
 ---
 
 The Kafka architecture is built on two layers, the _Control Plane_ (CP) and the _Data Plane_ (DP).  The CP is responsible for managing the metadata of a cluster. It is essentially the Zookeeper or KRaft part of the job. The DP handles the actual data management, client request processing and replication. Storage is in charge to the DP. 
@@ -130,7 +131,7 @@ Kafka uses an implementation of _write-ahead logging_ called _commit-log_ to per
 Records are appended to the end of a _log_ implemented as a _partition_, which in Kafka is just a folder with the name of the _topic_ plus a progressive number.Each log is divided into _segments_. In Kafka, segments are _.log_ files. The _segment_ stores a sequence of records.
 
 ---
-##### NOTE
+##### Note
 Segment storage is highly configurable, but only at the broker level. It is not possible to configure it per part or per topic. It is also not possible to use a different mount point because Kafka only uses the `log.dir' folder. The workaround is to use different brokers for different storage and assign partitions accordingly. 
 
 ---
